@@ -322,29 +322,30 @@ class PlaceRecommenderService:
         if cache_key in self._cache:
             entry = self._cache[cache_key]
             if datetime.now() - entry["timestamp"] < timedelta(minutes=CACHE_EXPIRY_MINUTES):
-                logger.info("⚡ Serving from Cache")
                 return entry["data"]
 
         expanded_query = self._expand_query_intent(request.mood)
         raw_places = []
         
-        logger.info("🚀 Firing concurrent API requests...")
-        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+        logger.info("⚡ PARALLEL FETCHING STARTED: FSQ & Geoapify running together...")
+        
+        # 🔥 MULTITHREADING: Dono APIs ko ek sath call karo!
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
             future_fsq = executor.submit(self._fetch_foursquare, request, expanded_query)
             future_geo = executor.submit(self._fetch_geoapify, request, expanded_query)
-            future_osm = executor.submit(self._fetch_overpass, request, expanded_query)
             
             raw_places.extend(future_fsq.result())
             raw_places.extend(future_geo.result())
-            raw_places.extend(future_osm.result())
 
-        logger.info(f"✅ Gathered {len(raw_places)} total raw places. Deduplicating...")
+        # Agar dono APIs milkar bhi data na laa payein, tab OSM chalega
+        if len(raw_places) < 5:
+            logger.info("⚠️ Low API results. Fetching OSM fallback...")
+            raw_places.extend(self._fetch_overpass(request, expanded_query))
 
         deduplicated_places = self._merge_and_deduplicate(raw_places)
         deduplicated_places.sort(key=lambda p: self._calculate_place_score(p, request.mood), reverse=True)
         
         if not deduplicated_places: 
-            logger.info("⚠️ No places found, triggering fallback data...")
             deduplicated_places = self._get_fallback_data(request, expanded_query["expanded_categories"])
             deduplicated_places.sort(key=lambda p: self._calculate_place_score(p, request.mood), reverse=True)
         
